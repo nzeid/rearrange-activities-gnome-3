@@ -5,7 +5,8 @@ const Main = imports.ui.main;
 const Mainloop = imports.mainloop;
 const Workspace = imports.ui.workspace;
 
-let oldWindowCloneInit, oldWindowCloneOnKeyPress;
+let oldWindowCloneInit;
+let oldComputeLayout;
 let oldRealRecalculateWindowPositions;
 let uniqueId = 0;
 let workspaces = {};
@@ -50,7 +51,7 @@ function enable() {
     }
 
     // Detect that the shift key has been released:
-    this.actor.connect('key-release-event', Lang.bind(this, function (actor, event) {
+    this.connect('key-release-event', Lang.bind(this, function (actor, event) {
       if(
         event.get_key_symbol() == Clutter.KEY_Shift_L
         || event.get_key_symbol() == Clutter.KEY_Shift_R
@@ -60,65 +61,116 @@ function enable() {
       return false;
     }));
 
-  };
-
-  // Overload the WindowClone key-press event handler:
-  oldWindowCloneOnKeyPress = Workspace.WindowClone.prototype._onKeyPress;
-  Workspace.WindowClone.prototype._onKeyPress = function(actor, event) {
-
-    // Original function:
-    if(oldWindowCloneOnKeyPress.apply(this, arguments)) {
-      return true;
-    }
-
-    // Detect that the shift key has been pressed:
-    if(
-      event.get_key_symbol() == Clutter.KEY_Shift_L
-      || event.get_key_symbol() == Clutter.KEY_Shift_R
-    ) {
-      return (this.raShiftDown = true);
-    }
-
-    // If the shift key is down:
-    if(this.raShiftDown) {
-
-      // Move the target window left in the arrangement:
-      if(event.get_key_symbol() == Clutter.KEY_Left) {
-        let workspaceId = this._workspace.metaWorkspace.raWorkspaceId;
-        let windowId = this.metaWindow.raWindowId;
-        let i = workspaces[workspaceId].windowsOrder.length;
-        while(i-- > 1) {
-          if(windowId === workspaces[workspaceId].windowsOrder[i]) {
-            workspaces[workspaceId].windowsOrder[i] = workspaces[workspaceId].windowsOrder[i - 1];
-            workspaces[workspaceId].windowsOrder[i - 1] = windowId;
-            this._workspace._recalculateWindowPositions(0);
-            break;
-          }
-        }
-        return true;
+    // Window rearrangement trigger:
+    this.connect('key-press-event', Lang.bind(this, function (actor, event) {
+      // Detect that the shift key has been pressed:
+      if(
+        event.get_key_symbol() == Clutter.KEY_Shift_L
+        || event.get_key_symbol() == Clutter.KEY_Shift_R
+      ) {
+        return (this.raShiftDown = true);
       }
 
-      // Move the target window right in the arrangement:
-      if(event.get_key_symbol() == Clutter.KEY_Right) {
-        let workspaceId = this._workspace.metaWorkspace.raWorkspaceId;
-        let windowId = this.metaWindow.raWindowId;
-        let i = workspaces[workspaceId].windowsOrder.length;
-        if(i-- > 1) {
-          do {
-            if(windowId === workspaces[workspaceId].windowsOrder[--i]) {
-              workspaces[workspaceId].windowsOrder[i] = workspaces[workspaceId].windowsOrder[i + 1];
-              workspaces[workspaceId].windowsOrder[i + 1] = windowId;
+      // If the shift key is down:
+      if(this.raShiftDown) {
+
+        // Move the target window left in the arrangement:
+        if(event.get_key_symbol() == Clutter.KEY_Left) {
+          let workspaceId = this._workspace.metaWorkspace.raWorkspaceId;
+          let windowId = this.metaWindow.raWindowId;
+          let i = workspaces[workspaceId].windowsOrder.length;
+          while(i-- > 1) {
+            if(windowId === workspaces[workspaceId].windowsOrder[i]) {
+              workspaces[workspaceId].windowsOrder[i] = workspaces[workspaceId].windowsOrder[i - 1];
+              workspaces[workspaceId].windowsOrder[i - 1] = windowId;
               this._workspace._recalculateWindowPositions(0);
               break;
             }
           }
-          while(i > 0);
+          return true;
         }
-        return true;
+
+        // Move the target window right in the arrangement:
+        if(event.get_key_symbol() == Clutter.KEY_Right) {
+          let workspaceId = this._workspace.metaWorkspace.raWorkspaceId;
+          let windowId = this.metaWindow.raWindowId;
+          let i = workspaces[workspaceId].windowsOrder.length;
+          if(i-- > 1) {
+            do {
+              if(windowId === workspaces[workspaceId].windowsOrder[--i]) {
+                workspaces[workspaceId].windowsOrder[i] = workspaces[workspaceId].windowsOrder[i + 1];
+                workspaces[workspaceId].windowsOrder[i + 1] = windowId;
+                this._workspace._recalculateWindowPositions(0);
+                break;
+              }
+            }
+            while(i > 0);
+          }
+          return true;
+        }
+
       }
 
+      // Otherwise do nothing:
+      return false;
+
+    }));
+
+  };
+
+  /*
+    We shim "computeLayout" solely to eliminate the sorting of windows by
+    vertical height. This was interfering with the addon when the window
+    heights weren't all the same.
+  */
+  oldComputeLayout = Workspace.UnalignedLayoutStrategy.prototype.computeLayout;
+  Workspace.UnalignedLayoutStrategy.prototype.computeLayout = function (windows, layout) {
+    let numRows = layout.numRows;
+    let rows = [];
+    let totalWidth = 0;
+    for(let i = 0; i < windows.length; i++) {
+      let window = windows[i];
+      let s = this._computeWindowScale(window);
+      totalWidth += window.width * s;
     }
-    return false;
+    let idealRowWidth = totalWidth / numRows;
+
+    // This is where the change was made:
+    let sortedWindows = windows.slice();
+
+    let windowIdx = 0;
+    for(let i = 0; i < numRows; i++) {
+      let row = this._newRow();
+      rows.push(row);
+      for(; windowIdx < sortedWindows.length; windowIdx++) {
+        let window = sortedWindows[windowIdx];
+        let s = this._computeWindowScale(window);
+        let width = window.width * s;
+        let height = window.height * s;
+        row.fullHeight = Math.max(row.fullHeight, height);
+        // either new width is < idealWidth or new width is nearer from idealWidth then oldWidth
+        if(this._keepSameRow(row, window, width, idealRowWidth) || (i == numRows - 1)) {
+          row.windows.push(window);
+          row.fullWidth += width;
+        }
+        else {
+          break;
+        }
+      }
+    }
+    let gridHeight = 0;
+    let maxRow;
+    for(let i = 0; i < numRows; i++) {
+      let row = rows[i];
+      this._sortRow(row);
+      if(!maxRow || row.fullWidth > maxRow.fullWidth)
+        maxRow = row;
+      gridHeight += row.fullHeight;
+    }
+    layout.rows = rows;
+    layout.maxColumns = maxRow.windows.length;
+    layout.gridWidth = maxRow.fullWidth;
+    layout.gridHeight = gridHeight;
   };
 
   // Overload the window overlay rendering function:
@@ -175,10 +227,15 @@ function enable() {
     this._currentLayout = this._computeLayout(orderedWindows);
 
     // Because the layout generation borks our order, we have to sort again:
+    let coordinates = [];
+    let j;
     for(i = 0; i < this._currentLayout.rows.length; ++i) {
-      this._currentLayout.rows[i].windows.sort(function(a, b) {
-        return orderedWindowsMap[a.metaWindow.raWindowId] - orderedWindowsMap[b.metaWindow.raWindowId];
-      });
+      for(j = 0; j < this._currentLayout.rows[i].windows.length; ++j) {
+        coordinates.push([i, j]);
+      }
+    }
+    for(i = 0; i < coordinates.length; ++i) {
+      this._currentLayout.rows[coordinates[i][0]].windows[coordinates[i][1]] = orderedWindows[i];
     }
 
     // Render the layout:
@@ -192,7 +249,7 @@ function disable() {
 
   // Restore the original functions:
   Workspace.WindowClone.prototype._init = oldWindowCloneInit;
-  Workspace.WindowClone.prototype._onKeyPress = oldWindowCloneOnKeyPress;
+  Workspace.UnalignedLayoutStrategy.prototype.computeLayout = oldComputeLayout;
   Workspace.Workspace.prototype._realRecalculateWindowPositions = oldRealRecalculateWindowPositions;
 
 }

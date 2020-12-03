@@ -2,11 +2,9 @@
   "description": "Rearrange activities (windows) in the overview by highlighting the windows with tab and hitting the shift-left-arrow and shift-right-arrow keys.",
   "name": "Rearrange Activities",
   "shell-version": [
-    "3.18.5",
-    "3.20.4",
-    "3.28.4"
+    "3.36.4"
   ],
   "url": "",
   "uuid": "rearrange-activities-gnome-3@nzeid.net",
-  "version": 4
+  "version": 7
 }
